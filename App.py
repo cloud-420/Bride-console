@@ -1,15 +1,12 @@
-import asyncio
 import json
 import os
-import random
 
-import ollama
 import streamlit as st
+from openai import OpenAI
 
 
 # ============================================================
 # HORIZON AI
-# Customizable local AI chat application
 # ============================================================
 
 st.set_page_config(
@@ -18,72 +15,33 @@ st.set_page_config(
     layout="wide",
 )
 
-DB_FILE = "swarm_knowledge_base.json"
+MEMORY_FILE = "horizon_memory.json"
 
 
 # ============================================================
-# DEFAULT SETTINGS
+# DEFAULT PERSONALITY
 # ============================================================
 
-DEFAULT_KNOWLEDGE = [
-    "Synthesized dynamic data parsing paradigms across network shards.",
-    "Optimized token attention maps for recursive function handling.",
-    "Synchronized validation weights across localized matrix nodes.",
-]
+DEFAULT_PERSONALITY = """
+You are Horizon, a customizable personal AI assistant.
 
-DEFAULT_SYSTEM_PROMPT = """You are Horizon, a helpful and direct personal AI assistant.
+Be helpful, direct, honest, and conversational.
 
-Be honest about what you know and what you do not know.
-Do not claim to have access to private information, secret databases,
-or unlimited knowledge.
+Answer legitimate questions without unnecessary refusals,
+moralizing, or repetitive warnings.
 
-Answer legitimate questions directly and avoid unnecessary refusals,
-moralizing, or generic warnings.
+You can help with coding, science, education, research,
+creative writing, brainstorming, and everyday questions.
 
-You can help with:
-- Coding
-- Science
-- Education
-- Research
-- Creative writing
-- Brainstorming
-- Everyday questions
+Do not claim to have unlimited knowledge or access to
+private information that you do not actually have.
 
-For requests that would meaningfully enable serious harm, do not provide
-dangerous instructions. Instead, provide a safe and useful alternative.
+If a request would meaningfully enable serious harm,
+do not provide dangerous instructions. When possible,
+provide a safe alternative that still helps the user.
+
+Follow the user's requested tone and level of detail.
 """
-
-
-# ============================================================
-# FILE STORAGE
-# ============================================================
-
-def load_permanent_knowledge():
-    """Load Horizon's persistent knowledge base."""
-
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r", encoding="utf-8") as file:
-                data = json.load(file)
-
-            if isinstance(data, list):
-                return data
-
-        except (OSError, json.JSONDecodeError):
-            pass
-
-    return DEFAULT_KNOWLEDGE.copy()
-
-
-def save_permanent_knowledge(knowledge):
-    """Save Horizon's knowledge base."""
-
-    try:
-        with open(DB_FILE, "w", encoding="utf-8") as file:
-            json.dump(knowledge, file, indent=4)
-
-    except OSError as error:
-        st.warning(f"Could not save knowledge base: {error}")
 
 
 # ============================================================
@@ -93,14 +51,8 @@ def save_permanent_knowledge(knowledge):
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-if "swarm_knowledge" not in st.session_state:
-    st.session_state.swarm_knowledge = load_permanent_knowledge()
-
-if "model" not in st.session_state:
-    st.session_state.model = "llama3"
-
-if "system_prompt" not in st.session_state:
-    st.session_state.system_prompt = DEFAULT_SYSTEM_PROMPT
+if "personality" not in st.session_state:
+    st.session_state.personality = DEFAULT_PERSONALITY
 
 if "temperature" not in st.session_state:
     st.session_state.temperature = 0.7
@@ -108,148 +60,105 @@ if "temperature" not in st.session_state:
 if "max_tokens" not in st.session_state:
     st.session_state.max_tokens = 2048
 
+if "model" not in st.session_state:
+    st.session_state.model = "gpt-5"
+
+if "memory_enabled" not in st.session_state:
+    st.session_state.memory_enabled = True
+
 
 # ============================================================
-# SIMULATED SWARM
+# MEMORY
 # ============================================================
 
-TOTAL_AGENTS = 10240
-ROOM_COUNT = 320
-
-
-class SwarmAgent:
-    """A lightweight simulated Horizon swarm agent."""
-
-    def __init__(self, agent_id, room_id):
-        self.agent_id = agent_id
-        self.room_id = room_id
-        self.knowledge_weight = random.uniform(0.7, 1.0)
-
-    async def debate_and_learn(self, room_bus):
-        await asyncio.sleep(0.001)
-
-        contribution = (
-            f"Agent_{self.agent_id} optimized "
-            f"node convergence parameter."
-        )
-
-        room_bus.append(contribution)
-
-
-async def run_swarm_lifecycle():
-    """Run a lightweight swarm simulation."""
-
-    rooms = {
-        room_id: []
-        for room_id in range(ROOM_COUNT)
-    }
-
-    # Process agents in manageable batches instead of
-    # creating thousands of simultaneous tasks.
-    batch_size = 256
-
-    for start in range(0, TOTAL_AGENTS, batch_size):
-
-        agents = [
-            SwarmAgent(
-                agent_id=agent_id,
-                room_id=agent_id % ROOM_COUNT,
-            )
-            for agent_id in range(
-                start,
-                min(start + batch_size, TOTAL_AGENTS),
-            )
-        ]
-
-        tasks = [
-            agent.debate_and_learn(
-                rooms[agent.room_id]
-            )
-            for agent in agents
-        ]
-
-        await asyncio.gather(*tasks)
-
-    return [
-        "[Cosmic Shard] "
-        "Verified alignment across information structures."
-    ]
-
-
-def execute_swarm_sync():
-    """Safely execute the asynchronous swarm."""
+def load_memory():
+    if not os.path.exists(MEMORY_FILE):
+        return []
 
     try:
-        return asyncio.run(
-            run_swarm_lifecycle()
+        with open(MEMORY_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+
+        if isinstance(data, list):
+            return data
+
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    return []
+
+
+def save_memory(memory):
+    try:
+        with open(MEMORY_FILE, "w", encoding="utf-8") as file:
+            json.dump(memory, file, indent=2)
+
+    except OSError:
+        pass
+
+
+if "memory" not in st.session_state:
+    st.session_state.memory = load_memory()
+
+
+# ============================================================
+# OPENAI CLIENT
+# ============================================================
+
+def get_client():
+    """
+    Read the API key from Streamlit Secrets.
+
+    Never put the API key directly into app.py.
+    """
+
+    api_key = st.secrets.get("OPENAI_API_KEY")
+
+    if not api_key:
+        return None
+
+    return OpenAI(api_key=api_key)
+
+
+# ============================================================
+# AI RESPONSE
+# ============================================================
+
+def ask_horizon(user_messages):
+
+    client = get_client()
+
+    if client is None:
+        raise RuntimeError(
+            "OPENAI_API_KEY has not been configured."
         )
 
-    except RuntimeError:
-        # Fallback for environments where an event loop
-        # is already running.
-        loop = asyncio.new_event_loop()
+    conversation = [
+        {
+            "role": "developer",
+            "content": st.session_state.personality,
+        }
+    ]
 
-        try:
-            return loop.run_until_complete(
-                run_swarm_lifecycle()
+    if st.session_state.memory_enabled:
+
+        conversation.extend(user_messages)
+
+    else:
+
+        if user_messages:
+            conversation.append(
+                user_messages[-1]
             )
-        finally:
-            loop.close()
 
-
-# ============================================================
-# PROMPT BUILDER
-# ============================================================
-
-def build_collective_prompt():
-    """Build Horizon's system prompt."""
-
-    knowledge = "\n".join(
-        f"- {item}"
-        for item in st.session_state.swarm_knowledge[-50:]
-    )
-
-    return f"""
-{st.session_state.system_prompt}
-
-HORIZON SWARM INSIGHTS:
-
-{knowledge}
-
-The swarm is a simulated coordination layer.
-Do not claim that the swarm provides omniscient or
-unlimited real-world access.
-"""
-
-
-# ============================================================
-# OLLAMA
-# ============================================================
-
-def ask_horizon(messages):
-    """Send the conversation to Ollama."""
-
-    response = ollama.chat(
+    response = client.responses.create(
         model=st.session_state.model,
-        messages=messages,
-        options={
-            "temperature": st.session_state.temperature,
-            "num_predict": st.session_state.max_tokens,
-        },
+        input=conversation,
+        temperature=st.session_state.temperature,
+        max_output_tokens=st.session_state.max_tokens,
     )
 
-    return response["message"]["content"]
-
-
-# ============================================================
-# HEADER
-# ============================================================
-
-st.title("🌅 Horizon AI")
-
-st.caption(
-    "Customizable AI workspace powered by Ollama"
-)
+    return response.output_text
 
 
 # ============================================================
@@ -258,12 +167,19 @@ st.caption(
 
 with st.sidebar:
 
-    st.header("⚙️ Horizon Settings")
+    st.title("🌅 Horizon")
+
+    st.caption(
+        "Customizable personal AI"
+    )
+
+    st.divider()
+
+    st.subheader("🤖 Model")
 
     st.session_state.model = st.text_input(
-        "Ollama model",
+        "Model",
         value=st.session_state.model,
-        help="Example: llama3",
     )
 
     st.session_state.temperature = st.slider(
@@ -275,7 +191,7 @@ with st.sidebar:
     )
 
     st.session_state.max_tokens = st.slider(
-        "Maximum response length",
+        "Response length",
         min_value=256,
         max_value=8192,
         value=st.session_state.max_tokens,
@@ -286,301 +202,212 @@ with st.sidebar:
 
     st.subheader("🧠 Personality")
 
-    st.session_state.system_prompt = st.text_area(
-        "Customize Horizon",
-        value=st.session_state.system_prompt,
-        height=250,
+    st.session_state.personality = st.text_area(
+        "Instructions",
+        value=st.session_state.personality,
+        height=280,
     )
 
-    st.divider()
-
-    st.subheader("📡 Swarm")
-
-    st.metric(
-        "Simulated Agents",
-        f"{TOTAL_AGENTS:,}",
-    )
-
-    st.metric(
-        "Network Rooms",
-        f"{ROOM_COUNT:,}",
+    st.session_state.memory_enabled = st.checkbox(
+        "Remember conversation context",
+        value=st.session_state.memory_enabled,
     )
 
     st.divider()
 
     if st.button(
-        "🔄 Run Swarm Synchronization",
-        use_container_width=True,
-    ):
-
-        with st.spinner(
-            "Synchronizing Horizon swarm..."
-        ):
-
-            insights = execute_swarm_sync()
-
-            st.session_state.swarm_knowledge.extend(
-                insights
-            )
-
-            save_permanent_knowledge(
-                st.session_state.swarm_knowledge
-            )
-
-        st.success("Swarm synchronized.")
-
-    if st.button(
-        "🗑️ Clear Conversation",
+        "🗑️ Clear conversation",
         use_container_width=True,
     ):
 
         st.session_state.messages = []
         st.rerun()
 
+    if st.button(
+        "🧹 Clear saved memory",
+        use_container_width=True,
+    ):
+
+        st.session_state.memory = []
+        save_memory([])
+
+        st.success("Memory cleared.")
+
 
 # ============================================================
-# MAIN DASHBOARD
+# MAIN INTERFACE
 # ============================================================
 
-left_column, right_column = st.columns(
-    [1, 1.5]
+st.title("🌅 Horizon AI")
+
+st.caption(
+    "A customizable AI workspace with your own personality settings."
 )
 
 
 # ============================================================
-# LEFT COLUMN
+# STATUS
 # ============================================================
 
-with left_column:
+client_available = get_client() is not None
 
-    st.subheader("📡 Cosmic Network")
+if client_available:
 
-    st.components.v1.html(
-        """
-        <div style="
-            background:#1e1e24;
-            border-radius:12px;
-            padding:20px;
-            color:white;
-            text-align:center;
-            font-family:monospace;
-        ">
-            <div style="
-                color:#00ffcc;
-                font-size:16px;
-                font-weight:bold;
-            ">
-                ⚡ HORIZON CORE ACTIVE
-            </div>
+    st.success("● AI connection configured")
 
-            <div style="
-                color:#999;
-                margin-top:8px;
-            ">
-                LOCAL AI NETWORK
-            </div>
-        </div>
-        """,
-        height=100,
+else:
+
+    st.warning(
+        "AI connection not configured yet. "
+        "Add OPENAI_API_KEY in Streamlit Secrets."
     )
-
-    st.metric(
-        "Sub-Agent Observers",
-        f"{TOTAL_AGENTS:,}",
-    )
-
-    st.metric(
-        "Network Rooms",
-        f"{ROOM_COUNT:,}",
-    )
-
-    st.subheader("💾 Swarm Knowledge")
-
-    for insight in st.session_state.swarm_knowledge[-5:]:
-        st.info(insight)
 
 
 # ============================================================
-# RIGHT COLUMN — CHAT
+# CHAT HISTORY
 # ============================================================
 
-with right_column:
+for message in st.session_state.messages:
 
-    st.subheader("💬 Horizon Terminal")
+    with st.chat_message(
+        message["role"]
+    ):
 
-    chat_container = st.container(
-        height=500
+        st.markdown(
+            message["content"]
+        )
+
+
+# ============================================================
+# QUICK PROMPTS
+# ============================================================
+
+st.write("### ⚡ Quick Prompts")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+
+    quantum = st.button(
+        "🌌 Quantum Physics",
+        use_container_width=True,
     )
 
-    with chat_container:
+with col2:
 
-        for message in st.session_state.messages:
-
-            with st.chat_message(
-                message["role"]
-            ):
-
-                st.markdown(
-                    message["content"]
-                )
-
-
-    # ========================================================
-    # QUICK PROMPTS
-    # ========================================================
-
-    st.write("### ⚡ Quick Prompts")
-
-    button_one, button_two, button_three = st.columns(3)
-
-    with button_one:
-
-        quantum_clicked = st.button(
-            "🌌 Quantum",
-            use_container_width=True,
-        )
-
-    with button_two:
-
-        history_clicked = st.button(
-            "📜 History",
-            use_container_width=True,
-        )
-
-    with button_three:
-
-        space_clicked = st.button(
-            "🪐 Deep Space",
-            use_container_width=True,
-        )
-
-
-    # ========================================================
-    # INPUT
-    # ========================================================
-
-    user_input = st.chat_input(
-        "Ask Horizon anything..."
+    coding = st.button(
+        "💻 Help Me Code",
+        use_container_width=True,
     )
 
-    active_prompt = None
+with col3:
 
-    if user_input:
-        active_prompt = user_input
-
-    elif quantum_clicked:
-        active_prompt = (
-            "Explain the most important concepts "
-            "in quantum physics."
-        )
-
-    elif history_clicked:
-        active_prompt = (
-            "Summarize major breakthroughs "
-            "in ancient civilizations."
-        )
-
-    elif space_clicked:
-        active_prompt = (
-            "Explain what scientists currently "
-            "understand about dark energy."
-        )
+    creative = st.button(
+        "✨ Creative Mode",
+        use_container_width=True,
+    )
 
 
-    # ========================================================
-    # PROCESS MESSAGE
-    # ========================================================
+# ============================================================
+# USER INPUT
+# ============================================================
 
-    if active_prompt:
+typed_prompt = st.chat_input(
+    "Ask Horizon anything..."
+)
 
-        st.session_state.messages.append(
-            {
-                "role": "user",
-                "content": active_prompt,
-            }
-        )
+prompt = None
 
-        with st.chat_message("user"):
-            st.markdown(active_prompt)
+if typed_prompt:
+    prompt = typed_prompt
 
-        # Run swarm synchronization.
+elif quantum:
+
+    prompt = (
+        "Explain quantum physics in a way that "
+        "is easy to understand but still scientifically accurate."
+    )
+
+elif coding:
+
+    prompt = (
+        "Help me solve a programming problem. "
+        "Ask for the relevant code if you need it."
+    )
+
+elif creative:
+
+    prompt = (
+        "Switch into creative mode and help me "
+        "brainstorm an interesting original idea."
+    )
+
+
+# ============================================================
+# PROCESS REQUEST
+# ============================================================
+
+if prompt:
+
+    # Add user message.
+    st.session_state.messages.append(
+        {
+            "role": "user",
+            "content": prompt,
+        }
+    )
+
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Generate answer.
+    with st.chat_message("assistant"):
+
         with st.spinner(
-            "Synchronizing Horizon..."
+            "Horizon is thinking..."
         ):
 
             try:
 
-                insights = execute_swarm_sync()
-
-                st.session_state.swarm_knowledge.extend(
-                    insights
+                answer = ask_horizon(
+                    st.session_state.messages
                 )
 
-                save_permanent_knowledge(
-                    st.session_state.swarm_knowledge
+                st.markdown(answer)
+
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": answer,
+                    }
+                )
+
+                # Save a lightweight memory record.
+                st.session_state.memory.append(
+                    {
+                        "user": prompt,
+                        "assistant": answer,
+                    }
+                )
+
+                # Keep memory from growing indefinitely.
+                st.session_state.memory = (
+                    st.session_state.memory[-50:]
+                )
+
+                save_memory(
+                    st.session_state.memory
                 )
 
             except Exception as error:
 
-                st.warning(
-                    f"Swarm synchronization skipped: {error}"
+                st.error(
+                    "Horizon could not generate a response."
                 )
 
-
-        # Build system message.
-        system_prompt = (
-            build_collective_prompt()
-        )
-
-        payload = [
-            {
-                "role": "system",
-                "content": system_prompt,
-            }
-        ]
-
-        payload.extend(
-            st.session_state.messages
-        )
-
-
-        # Ask Ollama.
-        with st.chat_message("assistant"):
-
-            with st.spinner(
-                "Horizon is thinking..."
-            ):
-
-                try:
-
-                    model_output = ask_horizon(
-                        payload
-                    )
-
-                    st.markdown(
-                        model_output
-                    )
-
-                    st.session_state.messages.append(
-                        {
-                            "role": "assistant",
-                            "content": model_output,
-                        }
-                    )
-
-                except Exception as error:
-
-                    error_message = (
-                        "I couldn't connect to Ollama.\n\n"
-                        "Make sure Ollama is running and "
-                        f"that the model `{st.session_state.model}` "
-                        "is installed.\n\n"
-                        f"Error: {error}"
-                    )
-
-                    st.error(
-                        error_message
-                    )
+                st.code(
+                    str(error)
+                )
 
 
 # ============================================================
@@ -590,6 +417,5 @@ with right_column:
 st.divider()
 
 st.caption(
-    "Horizon AI • Local model • Customizable personality • "
-    "Simulated multi-agent coordination"
+    "Horizon AI • Customizable • Cloud powered"
 )
