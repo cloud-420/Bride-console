@@ -419,3 +419,4 @@ st.divider()
 st.caption(
     "Horizon AI • Customizable • Cloud powered"
 )
+
