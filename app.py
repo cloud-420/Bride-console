@@ -1,13 +1,10 @@
+
 import json
 import os
 
 import streamlit as st
 from openai import OpenAI
 
-
-# ============================================================
-# HORIZON AI
-# ============================================================
 
 st.set_page_config(
     page_title="Horizon AI",
@@ -16,11 +13,6 @@ st.set_page_config(
 )
 
 MEMORY_FILE = "horizon_memory.json"
-
-
-# ============================================================
-# DEFAULT PERSONALITY
-# ============================================================
 
 DEFAULT_PERSONALITY = """
 You are Horizon, a customizable personal AI assistant.
@@ -54,17 +46,17 @@ if "messages" not in st.session_state:
 if "personality" not in st.session_state:
     st.session_state.personality = DEFAULT_PERSONALITY
 
-if "temperature" not in st.session_state:
-    st.session_state.temperature = 0.7
-
 if "max_tokens" not in st.session_state:
     st.session_state.max_tokens = 2048
 
 if "model" not in st.session_state:
-    st.session_state.model = "gpt-5"
+    st.session_state.model = "gpt-5-mini"
 
 if "memory_enabled" not in st.session_state:
     st.session_state.memory_enabled = True
+
+if "memory" not in st.session_state:
+    st.session_state.memory = []
 
 
 # ============================================================
@@ -79,25 +71,22 @@ def load_memory():
         with open(MEMORY_FILE, "r", encoding="utf-8") as file:
             data = json.load(file)
 
-        if isinstance(data, list):
-            return data
+        return data if isinstance(data, list) else []
 
     except (OSError, json.JSONDecodeError):
-        pass
-
-    return []
+        return []
 
 
 def save_memory(memory):
     try:
         with open(MEMORY_FILE, "w", encoding="utf-8") as file:
-            json.dump(memory, file, indent=2)
+            json.dump(memory, file, indent=2, ensure_ascii=False)
 
     except OSError:
         pass
 
 
-if "memory" not in st.session_state:
+if not st.session_state.memory:
     st.session_state.memory = load_memory()
 
 
@@ -105,14 +94,17 @@ if "memory" not in st.session_state:
 # OPENAI CLIENT
 # ============================================================
 
+def get_api_key():
+    try:
+        api_key = st.secrets.get("OPENAI_API_KEY")
+    except Exception:
+        api_key = None
+
+    return api_key or os.environ.get("OPENAI_API_KEY")
+
+
 def get_client():
-    """
-    Read the API key from Streamlit Secrets.
-
-    Never put the API key directly into app.py.
-    """
-
-    api_key = st.secrets.get("OPENAI_API_KEY")
+    api_key = get_api_key()
 
     if not api_key:
         return None
@@ -125,12 +117,12 @@ def get_client():
 # ============================================================
 
 def ask_horizon(user_messages):
-
     client = get_client()
 
     if client is None:
         raise RuntimeError(
-            "OPENAI_API_KEY has not been configured."
+            "OPENAI_API_KEY is not configured. "
+            "Add it in Streamlit Cloud Settings > Secrets."
         )
 
     conversation = [
@@ -141,20 +133,36 @@ def ask_horizon(user_messages):
     ]
 
     if st.session_state.memory_enabled:
-
         conversation.extend(user_messages)
 
-    else:
+        saved_memory = st.session_state.memory[-10:]
 
-        if user_messages:
-            conversation.append(
-                user_messages[-1]
+        if saved_memory:
+            memory_text = "\n\n".join(
+                f"Previous exchange:\n"
+                f"User: {item.get('user', '')}\n"
+                f"Assistant: {item.get('assistant', '')}"
+                for item in saved_memory
             )
+
+            conversation.insert(
+                1,
+                {
+                    "role": "developer",
+                    "content": (
+                        "Here are previous exchanges for context. "
+                        "Use them only when relevant:\n\n"
+                        + memory_text
+                    ),
+                },
+            )
+
+    elif user_messages:
+        conversation.append(user_messages[-1])
 
     response = client.responses.create(
         model=st.session_state.model,
         input=conversation,
-        temperature=st.session_state.temperature,
         max_output_tokens=st.session_state.max_tokens,
     )
 
@@ -166,28 +174,21 @@ def ask_horizon(user_messages):
 # ============================================================
 
 with st.sidebar:
-
     st.title("🌅 Horizon")
-
-    st.caption(
-        "Customizable personal AI"
-    )
-
+    st.caption("Customizable personal AI")
     st.divider()
 
     st.subheader("🤖 Model")
 
-    st.session_state.model = st.text_input(
-        "Model",
-        value=st.session_state.model,
-    )
-
-    st.session_state.temperature = st.slider(
-        "Creativity",
-        min_value=0.0,
-        max_value=1.5,
-        value=st.session_state.temperature,
-        step=0.1,
+    st.session_state.model = st.selectbox(
+        "AI Model",
+        options=[
+            "gpt-5-mini",
+            "gpt-5",
+            "gpt-4.1-mini",
+            "gpt-4.1",
+        ],
+        index=0,
     )
 
     st.session_state.max_tokens = st.slider(
@@ -215,22 +216,13 @@ with st.sidebar:
 
     st.divider()
 
-    if st.button(
-        "🗑️ Clear conversation",
-        use_container_width=True,
-    ):
-
+    if st.button("🗑️ Clear conversation", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
 
-    if st.button(
-        "🧹 Clear saved memory",
-        use_container_width=True,
-    ):
-
+    if st.button("🧹 Clear saved memory", use_container_width=True):
         st.session_state.memory = []
         save_memory([])
-
         st.success("Memory cleared.")
 
 
@@ -244,19 +236,9 @@ st.caption(
     "A customizable AI workspace with your own personality settings."
 )
 
-
-# ============================================================
-# STATUS
-# ============================================================
-
-client_available = get_client() is not None
-
-if client_available:
-
+if get_client() is not None:
     st.success("● AI connection configured")
-
 else:
-
     st.warning(
         "AI connection not configured yet. "
         "Add OPENAI_API_KEY in Streamlit Secrets."
@@ -268,14 +250,8 @@ else:
 # ============================================================
 
 for message in st.session_state.messages:
-
-    with st.chat_message(
-        message["role"]
-    ):
-
-        st.markdown(
-            message["content"]
-        )
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
 
 # ============================================================
@@ -287,59 +263,39 @@ st.write("### ⚡ Quick Prompts")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-
-    quantum = st.button(
-        "🌌 Quantum Physics",
-        use_container_width=True,
-    )
+    quantum = st.button("🌌 Quantum Physics", use_container_width=True)
 
 with col2:
-
-    coding = st.button(
-        "💻 Help Me Code",
-        use_container_width=True,
-    )
+    coding = st.button("💻 Help Me Code", use_container_width=True)
 
 with col3:
-
-    creative = st.button(
-        "✨ Creative Mode",
-        use_container_width=True,
-    )
+    creative = st.button("✨ Creative Mode", use_container_width=True)
 
 
 # ============================================================
 # USER INPUT
 # ============================================================
 
-typed_prompt = st.chat_input(
-    "Ask Horizon anything..."
-)
+typed_prompt = st.chat_input("Ask Horizon anything...")
 
-prompt = None
+prompt = typed_prompt
 
-if typed_prompt:
-    prompt = typed_prompt
-
-elif quantum:
-
+if not prompt and quantum:
     prompt = (
-        "Explain quantum physics in a way that "
-        "is easy to understand but still scientifically accurate."
+        "Explain quantum physics in a way that is easy to understand "
+        "but still scientifically accurate."
     )
 
-elif coding:
-
+elif not prompt and coding:
     prompt = (
         "Help me solve a programming problem. "
         "Ask for the relevant code if you need it."
     )
 
-elif creative:
-
+elif not prompt and creative:
     prompt = (
-        "Switch into creative mode and help me "
-        "brainstorm an interesting original idea."
+        "Switch into creative mode and help me brainstorm "
+        "an interesting original idea."
     )
 
 
@@ -348,8 +304,6 @@ elif creative:
 # ============================================================
 
 if prompt:
-
-    # Add user message.
     st.session_state.messages.append(
         {
             "role": "user",
@@ -360,18 +314,10 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Generate answer.
     with st.chat_message("assistant"):
-
-        with st.spinner(
-            "Horizon is thinking..."
-        ):
-
+        with st.spinner("Horizon is thinking..."):
             try:
-
-                answer = ask_horizon(
-                    st.session_state.messages
-                )
+                answer = ask_horizon(st.session_state.messages)
 
                 st.markdown(answer)
 
@@ -382,7 +328,6 @@ if prompt:
                     }
                 )
 
-                # Save a lightweight memory record.
                 st.session_state.memory.append(
                     {
                         "user": prompt,
@@ -390,24 +335,13 @@ if prompt:
                     }
                 )
 
-                # Keep memory from growing indefinitely.
-                st.session_state.memory = (
-                    st.session_state.memory[-50:]
-                )
+                st.session_state.memory = st.session_state.memory[-50:]
 
-                save_memory(
-                    st.session_state.memory
-                )
+                save_memory(st.session_state.memory)
 
             except Exception as error:
-
-                st.error(
-                    "Horizon could not generate a response."
-                )
-
-                st.code(
-                    str(error)
-                )
+                st.error("Horizon could not generate a response.")
+                st.code(str(error))
 
 
 # ============================================================
@@ -416,7 +350,4 @@ if prompt:
 
 st.divider()
 
-st.caption(
-    "Horizon AI • Customizable • Cloud powered"
-)
-
+st.caption("Horizon AI • Customizable • Cloud powered")
